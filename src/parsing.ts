@@ -49,9 +49,6 @@ export const parseFile = async (state: State, filePath: string) => {
     if (!path.isAbsolute(link)) {
       target = path.normalize(`${parentDirectory}/${link}`);
     }
-    if (target.endsWith("#")) {
-      continue;
-    }
     linkSet.add(id(target));
   }
   node.links = Array.from(linkSet);
