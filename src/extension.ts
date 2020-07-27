@@ -46,6 +46,14 @@ const watch = (
     sendGraph();
   });
 
+  // Watch file creation in case user adds a new file
+  watcher.onDidCreate(async (event) => {
+    await parseFile(state, event.path);
+    filterNonExistingEdges(state);
+    generateBacklinks(state);
+    sendGraph();
+  });
+
   watcher.onDidDelete(async (event) => {
     let nodeId = id(event.path);
     let node = state.adjacencyList[nodeId];

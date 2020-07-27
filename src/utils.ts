@@ -1,10 +1,22 @@
 import * as vscode from "vscode";
+import * as md5 from "md5";
+import { extname } from "path";
 import { MarkdownNode, Graph, State } from "./types";
 
 export const findLinks = (ast: MarkdownNode): string[] => {
   if (ast.type === "link" || ast.type === "definition") {
-    return [ast.url!];
+    // ignore empty, anchor and web links
+    if (
+      !ast.url ||
+      ast.url.startsWith("#") ||
+      vscode.Uri.parse(ast.url).scheme.startsWith("http")
+    ) {
+      return [];
+    }
+
+    return [ast.url];
   }
+
   if (ast.type === "wikiLink") {
     return [ast.data!.permalink!];
   }
@@ -41,12 +53,8 @@ export const findTitle = (ast: MarkdownNode): string | null => {
 };
 
 export const id = (path: string): string => {
-  // return md5(path);
-  let parts = path.split(".");
-  if (parts.length > 1) {
-    return parts.slice(0, -1).join(".");
-  }
-  return parts.join(".");
+  // Extracting file name without extension
+  return md5(path.substring(0, path.length - extname(path).length));
 };
 
 export const getConfiguration = (key: string) =>
