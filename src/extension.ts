@@ -1,21 +1,31 @@
 import * as vscode from "vscode";
 import { TextDecoder } from "util";
 import * as path from "path";
-import { parseFile, parseDirectory, learnFileId } from "./parsing";
-import { filterNonExistingEdges, getColumnSetting, getConfiguration, getFileTypesSetting } from "./utils";
-import { Graph } from "./types";
+import { parseFile, parseDirectory } from "./parsing";
+import {
+  filterNonExistingEdges,
+  getColumnSetting,
+  getConfiguration,
+  getFileTypesSetting,
+  id,
+  generateBacklinks,
+} from "./utils";
+import { State } from "./types";
 
 const watch = (
   context: vscode.ExtensionContext,
   panel: vscode.WebviewPanel,
-  graph: Graph
+  state: State
 ) => {
   if (vscode.workspace.rootPath === undefined) {
     return;
   }
 
   const watcher = vscode.workspace.createFileSystemWatcher(
-    new vscode.RelativePattern(vscode.workspace.rootPath, `**/*{${getFileTypesSetting().join(",")}}`),
+    new vscode.RelativePattern(
+      vscode.workspace.rootPath,
+      `**/*{${getFileTypesSetting().join(",")}}`
+    ),
     false,
     false,
     false
@@ -24,57 +34,61 @@ const watch = (
   const sendGraph = () => {
     panel.webview.postMessage({
       type: "refresh",
-      payload: graph,
+      payload: state,
     });
   };
 
   // Watch file changes in case user adds a link.
   watcher.onDidChange(async (event) => {
-    await parseFile(graph, event.path);
-    filterNonExistingEdges(graph);
+    await parseFile(state, event.path);
+    filterNonExistingEdges(state);
+    generateBacklinks(state);
     sendGraph();
   });
 
   watcher.onDidDelete(async (event) => {
-    const index = graph.nodes.findIndex((node) => node.path === event.path);
-    if (index === -1) {
+    let nodeId = id(event.path);
+    let node = state.adjacencyList[nodeId];
+
+    if (!node) {
       return;
     }
 
-    graph.nodes.splice(index, 1);
-    graph.edges = graph.edges.filter(
-      (edge) => edge.source !== event.path && edge.target !== event.path
-    );
+    delete state.adjacencyList[nodeId];
+    for (const node of Object.values(state.adjacencyList)) {
+      node.links = node.links.filter((link) => link !== nodeId);
+    }
 
     sendGraph();
   });
 
   vscode.workspace.onDidOpenTextDocument(async (event) => {
-    panel.webview.postMessage({
-      type: "fileOpen",
-      payload: { path: event.fileName },
-    });
+    let path = event.uri.path;
+    if (path.endsWith(".git")) {
+      path = path.slice(0, -4);
+    }
+    const nodeId = id(path);
+    state.currentNode = nodeId;
+    sendGraph();
   });
 
   vscode.workspace.onDidRenameFiles(async (event) => {
     for (const file of event.files) {
       const previous = file.oldUri.path;
+      const prevId = id(previous);
       const next = file.newUri.path;
+      const nextId = id(next);
 
-      for (const edge of graph.edges) {
-        if (edge.source === previous) {
-          edge.source = next;
-        }
-
-        if (edge.target === previous) {
-          edge.target = next;
-        }
+      if (state.adjacencyList[prevId]) {
+        state.adjacencyList[nextId] = state.adjacencyList[prevId];
+        state.adjacencyList[nextId].path = next;
+        delete state.adjacencyList[prevId];
       }
 
-      for (const node of graph.nodes) {
-        if (node.path === previous) {
-          node.path = next;
-        }
+      for (const node of Object.values(state.adjacencyList)) {
+        node.links = node.links.map((link) =>
+          link === prevId ? nextId : link
+        );
       }
 
       sendGraph();
@@ -83,6 +97,9 @@ const watch = (
 
   panel.webview.onDidReceiveMessage(
     (message) => {
+      if (message.type === "ready") {
+        sendGraph();
+      }
       if (message.type === "click") {
         const openPath = vscode.Uri.file(message.payload.path);
         const column = getColumnSetting("openColumn");
@@ -104,6 +121,8 @@ const watch = (
 export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand("markdown-links.showGraph", async () => {
+      const currentFilePath =
+        vscode.window.activeTextEditor?.document?.uri?.path;
       const column = getColumnSetting("showColumn");
 
       const panel = vscode.window.createWebviewPanel(
@@ -123,22 +142,19 @@ export function activate(context: vscode.ExtensionContext) {
         return;
       }
 
-      const graph: Graph = {
-        nodes: [],
-        edges: [],
-      };
+      const state: State = { adjacencyList: {}, currentNode: undefined };
 
-      await parseDirectory(graph, vscode.workspace.rootPath, learnFileId);
-      await parseDirectory(graph, vscode.workspace.rootPath, parseFile);
-      filterNonExistingEdges(graph);
+      await parseDirectory(state, vscode.workspace.rootPath, parseFile);
+      filterNonExistingEdges(state);
+      generateBacklinks(state);
 
-      const d3Uri = panel.webview.asWebviewUri(
-        vscode.Uri.file(path.join(context.extensionPath, "static", "d3.min.js"))
-      );
+      if (currentFilePath && state.adjacencyList[id(currentFilePath)]) {
+        state.currentNode = id(currentFilePath);
+      }
 
-      panel.webview.html = await getWebviewContent(context, graph, d3Uri);
+      panel.webview.html = await getWebviewContent(context, panel, state);
 
-      watch(context, panel, graph);
+      watch(context, panel, state);
     })
   );
 
@@ -151,8 +167,8 @@ export function activate(context: vscode.ExtensionContext) {
 
 async function getWebviewContent(
   context: vscode.ExtensionContext,
-  graph: Graph,
-  d3Uri: vscode.Uri
+  panel: vscode.WebviewPanel,
+  state: State
 ) {
   const webviewPath = vscode.Uri.file(
     path.join(context.extensionPath, "static", "webview.html")
@@ -161,15 +177,19 @@ async function getWebviewContent(
 
   const text = new TextDecoder("utf-8").decode(file);
 
+  const webviewUri = (fileName: string) =>
+    panel.webview
+      .asWebviewUri(
+        vscode.Uri.file(path.join(context.extensionPath, "static", fileName))
+      )
+      .toString();
+
   const filled = text
-    .replace("--REPLACE-WITH-D3-URI--", d3Uri.toString())
+    .replace("--REPLACE-WITH-GRAPH-JS-URI--", webviewUri("graph.js"))
+    .replace("--REPLACE-WITH-D3-URI--", webviewUri("d3.min.js"))
     .replace(
-      "let nodesData = [];",
-      `let nodesData = ${JSON.stringify(graph.nodes)}`
-    )
-    .replace(
-      "let linksData = [];",
-      `let linksData = ${JSON.stringify(graph.edges)}`
+      "--REPLACE-WITH-SEEDRANDOM-URI--",
+      webviewUri("seedrandom.min.js")
     );
 
   return filled;

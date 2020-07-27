@@ -1,6 +1,5 @@
 import * as vscode from "vscode";
-import * as md5 from "md5";
-import { MarkdownNode, Graph } from "./types";
+import { MarkdownNode, Graph, State } from "./types";
 
 export const findLinks = (ast: MarkdownNode): string[] => {
   if (ast.type === "link" || ast.type === "definition") {
@@ -42,12 +41,12 @@ export const findTitle = (ast: MarkdownNode): string | null => {
 };
 
 export const id = (path: string): string => {
-  return md5(path);
-
-  // Extracting file name without extension:
-  // const fullPath = path.split("/");
-  // const fileName = fullPath[fullPath.length - 1];
-  // return fileName.split(".")[0];
+  // return md5(path);
+  let parts = path.split(".");
+  if (parts.length > 1) {
+    return parts.slice(0, -1).join(".");
+  }
+  return parts.join(".");
 };
 
 export const getConfiguration = (key: string) =>
@@ -99,8 +98,21 @@ export const getDot = (graph: Graph) => `digraph g {
 export const exists = (graph: Graph, id: string) =>
   !!graph.nodes.find((node) => node.id === id);
 
-export const filterNonExistingEdges = (graph: Graph) => {
-  graph.edges = graph.edges.filter(
-    (edge) => exists(graph, edge.source) && exists(graph, edge.target)
-  );
+export const filterNonExistingEdges = (state: State) => {
+  const nodes = Object.values(state.adjacencyList);
+  for (const node of nodes) {
+    node.links = node.links.filter((link) => link in state.adjacencyList);
+  }
+};
+
+export const generateBacklinks = (state: State) => {
+  const nodes = Object.values(state.adjacencyList);
+  for (const node of nodes) {
+    for (const link of node.links) {
+      const linkedNode = state.adjacencyList[link];
+      const linkSet = new Set(linkedNode.links);
+      linkSet.add(node.id);
+      linkedNode.links = Array.from(linkSet);
+    }
+  }
 };

@@ -7,11 +7,19 @@ export type Node = {
   id: string;
   path: string;
   label: string;
+  links: string[];
+  backlinks: string[];
+  visited?: boolean;
 };
 
 export type Graph = {
   nodes: Node[];
   edges: Edge[];
+};
+
+export type State = {
+  adjacencyList: Record<string, Node>;
+  currentNode?: string;
 };
 
 export type MarkdownNode = {
